@@ -14,6 +14,10 @@ import redis.clients.jedis.exceptions.JedisConnectionException;
 import redis.clients.jedis.exceptions.JedisException;
 import redis.clients.util.Pool;
 
+import javax.net.ssl.HostnameVerifier;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSocketFactory;
+
 public class JedisSentinelPool extends Pool<Jedis> {
 
   protected GenericObjectPoolConfig poolConfig;
@@ -34,6 +38,11 @@ public class JedisSentinelPool extends Pool<Jedis> {
   private volatile JedisFactory factory;
   private volatile HostAndPort currentHostMaster;
 
+  protected boolean ssl;
+  protected SSLSocketFactory sslSocketFactory;
+  protected SSLParameters sslParameters;
+  protected HostnameVerifier hostnameVerifier;
+
   private final Object initPoolLock = new Object();
 
   public JedisSentinelPool(String masterName, Set<String> sentinels,
@@ -49,6 +58,18 @@ public class JedisSentinelPool extends Pool<Jedis> {
 
   public JedisSentinelPool(String masterName, Set<String> sentinels, String password) {
     this(masterName, sentinels, new GenericObjectPoolConfig(), Protocol.DEFAULT_TIMEOUT, password);
+  }
+
+  public JedisSentinelPool(String masterName, Set<String> sentinels, String password, final boolean ssl) {
+    this(masterName, sentinels, new GenericObjectPoolConfig(), Protocol.DEFAULT_TIMEOUT, Protocol.DEFAULT_TIMEOUT, password,
+            Protocol.DEFAULT_DATABASE, null, ssl, null, null, null);
+  }
+
+  public JedisSentinelPool(String masterName, Set<String> sentinels, String password,
+                           final boolean ssl, final SSLSocketFactory sslSocketFactory,
+                           final SSLParameters sslParameters, final HostnameVerifier hostnameVerifier) {
+    this(masterName, sentinels, new GenericObjectPoolConfig(), Protocol.DEFAULT_TIMEOUT, Protocol.DEFAULT_TIMEOUT, password,
+            Protocol.DEFAULT_DATABASE, null, ssl, sslSocketFactory, sslParameters, hostnameVerifier);
   }
 
   public JedisSentinelPool(String masterName, Set<String> sentinels,
@@ -85,14 +106,32 @@ public class JedisSentinelPool extends Pool<Jedis> {
   }
 
   public JedisSentinelPool(String masterName, Set<String> sentinels,
-      final GenericObjectPoolConfig poolConfig, final int connectionTimeout, final int soTimeout,
-      final String password, final int database, final String clientName) {
+                           final GenericObjectPoolConfig poolConfig, final int connectionTimeout, final int soTimeout,
+                           final String password, final int database, final String clientName) {
+      this(masterName, sentinels, poolConfig, connectionTimeout, soTimeout, password, database, clientName, false);
+  }
+
+  public JedisSentinelPool(String masterName, Set<String> sentinels,
+                           final GenericObjectPoolConfig poolConfig, final int connectionTimeout, final int soTimeout,
+                           final String password, final int database, final String clientName, final boolean ssl) {
+    this(masterName, sentinels, poolConfig, connectionTimeout, soTimeout, password, database, clientName, ssl, null, null, null);
+  }
+
+  public JedisSentinelPool(String masterName, Set<String> sentinels,
+                           final GenericObjectPoolConfig poolConfig, final int connectionTimeout, final int soTimeout,
+                           final String password, final int database, final String clientName,
+                           final boolean ssl, final SSLSocketFactory sslSocketFactory,
+                           final SSLParameters sslParameters, final HostnameVerifier hostnameVerifier) {
     this.poolConfig = poolConfig;
     this.connectionTimeout = connectionTimeout;
     this.soTimeout = soTimeout;
     this.password = password;
     this.database = database;
     this.clientName = clientName;
+    this.ssl = ssl;
+    this.sslSocketFactory = sslSocketFactory;
+    this.sslParameters = sslParameters;
+    this.hostnameVerifier = hostnameVerifier;
 
     HostAndPort master = initSentinels(sentinels, masterName);
     initPool(master);
@@ -117,7 +156,7 @@ public class JedisSentinelPool extends Pool<Jedis> {
         currentHostMaster = master;
         if (factory == null) {
           factory = new JedisFactory(master.getHost(), master.getPort(), connectionTimeout,
-              soTimeout, password, database, clientName, false, null, null, null);
+              soTimeout, password, database, clientName, ssl, sslSocketFactory, sslParameters, hostnameVerifier);
           initPool(poolConfig, factory);
         } else {
           factory.setHostAndPort(currentHostMaster);
@@ -147,7 +186,7 @@ public class JedisSentinelPool extends Pool<Jedis> {
 
       Jedis jedis = null;
       try {
-        jedis = new Jedis(hap.getHost(), hap.getPort());
+        jedis = new Jedis(hap.getHost(), hap.getPort(), this.ssl, this.sslSocketFactory, this.sslParameters, this.hostnameVerifier);
 
         List<String> masterAddr = jedis.sentinelGetMasterAddrByName(masterName);
 
@@ -191,7 +230,7 @@ public class JedisSentinelPool extends Pool<Jedis> {
 
     for (String sentinel : sentinels) {
       final HostAndPort hap = HostAndPort.parseString(sentinel);
-      MasterListener masterListener = new MasterListener(masterName, hap.getHost(), hap.getPort());
+      MasterListener masterListener = new MasterListener(masterName, hap.getHost(), hap.getPort(), ssl, sslSocketFactory, sslParameters, hostnameVerifier);
       // whether MasterListener threads are alive or not, process can be stopped
       masterListener.setDaemon(true);
       masterListeners.add(masterListener);
@@ -201,7 +240,7 @@ public class JedisSentinelPool extends Pool<Jedis> {
     return master;
   }
 
-  private HostAndPort toHostAndPort(List<String> getMasterAddrByNameResult) {
+  protected HostAndPort toHostAndPort(List<String> getMasterAddrByNameResult) {
     String host = getMasterAddrByNameResult.get(0);
     int port = Integer.parseInt(getMasterAddrByNameResult.get(1));
 
@@ -258,6 +297,10 @@ public class JedisSentinelPool extends Pool<Jedis> {
     protected String masterName;
     protected String host;
     protected int port;
+    protected boolean ssl;
+    protected SSLSocketFactory sslSocketFactory;
+    protected SSLParameters sslParameters;
+    protected HostnameVerifier hostnameVerifier;
     protected long subscribeRetryWaitTimeMillis = 5000;
     protected volatile Jedis j;
     protected AtomicBoolean running = new AtomicBoolean(false);
@@ -265,16 +308,29 @@ public class JedisSentinelPool extends Pool<Jedis> {
     protected MasterListener() {
     }
 
-    public MasterListener(String masterName, String host, int port) {
+    public MasterListener(String masterName, String host, int port, boolean ssl,
+                          SSLSocketFactory sslSocketFactory, SSLParameters sslParameters,
+                          HostnameVerifier hostnameVerifier) {
       super(String.format("MasterListener-%s-[%s:%d]", masterName, host, port));
       this.masterName = masterName;
       this.host = host;
       this.port = port;
+      this.ssl = ssl;
+      this.sslSocketFactory = sslSocketFactory;
+      this.sslParameters = sslParameters;
+      this.hostnameVerifier = hostnameVerifier;
+    }
+
+    public MasterListener(String masterName, String host, int port,
+                          boolean ssl, SSLSocketFactory sslSocketFactory, SSLParameters sslParameters,
+                          HostnameVerifier hostnameVerifier, long subscribeRetryWaitTimeMillis) {
+      this(masterName, host, port, ssl, sslSocketFactory, sslParameters, hostnameVerifier);
+      this.subscribeRetryWaitTimeMillis = subscribeRetryWaitTimeMillis;
     }
 
     public MasterListener(String masterName, String host, int port,
         long subscribeRetryWaitTimeMillis) {
-      this(masterName, host, port);
+      this(masterName, host, port, false, null, null, null);
       this.subscribeRetryWaitTimeMillis = subscribeRetryWaitTimeMillis;
     }
 
@@ -285,7 +341,7 @@ public class JedisSentinelPool extends Pool<Jedis> {
 
       while (running.get()) {
 
-        j = new Jedis(host, port);
+        j = new Jedis(host, port, ssl, sslSocketFactory, sslParameters, hostnameVerifier);
 
         try {
           // double check that it is not being shutdown
