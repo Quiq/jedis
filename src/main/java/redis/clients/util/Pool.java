@@ -23,6 +23,10 @@ public abstract class Pool<T> implements Closeable {
     initPool(poolConfig, factory);
   }
 
+  public GenericObjectPool<T> getInternalPool() {
+      return internalPool;
+  }
+
   @Override
   public void close() {
     destroy();

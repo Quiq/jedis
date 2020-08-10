@@ -106,6 +106,16 @@ public class Jedis extends BinaryJedis implements JedisCommands, MultiKeyCommand
     super(uri, connectionTimeout, soTimeout, sslSocketFactory, sslParameters, hostnameVerifier);
   }
 
+  private String lastTenant = null;
+
+  public String getLastTenant() {
+      return lastTenant;
+  }
+
+  public void setLastTenant(String tenant) {
+      this.lastTenant = tenant;
+  }
+
   /**
    * Set the string value as value of the key. The string can't be longer than 1073741824 bytes (1
    * GB).
